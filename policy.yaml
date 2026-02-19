@@ -1,0 +1,72 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: sync-vcluster-to-argocd
+spec:
+  admission: true
+  background: true
+  generateExisting: true
+  rules:
+    - name: source-kubeconfig-to-argo-cluster-secret
+      match:
+        all:
+          - resources:
+              kinds:
+                - Secret
+              name: vc-*
+              selector:
+                matchExpressions:
+                  - key: vcluster-name
+                    operator: Exists
+      context:
+        - name: clusterName
+          variable:
+            jmesPath: to_string(@)
+            value: '{{ request.object.metadata.labels."vcluster-name" }}'
+        - name: kubeconfigData
+          variable:
+            jmesPath: to_string(@)
+            value: "{{ request.object.data.config }}"
+        - name: serverName
+          variable:
+            jmesPath: to_string(@)
+            value: "{{ kubeconfigData | base64_decode(@) | parse_yaml(@).clusters[0].cluster.server}}"
+        - name: caData
+          variable:
+            jmesPath: to_string(@)
+            value: '{{ kubeconfigData | base64_decode(@) | parse_yaml(@).clusters[0].cluster."certificate-authority-data"}}'
+        - name: clientCert
+          variable:
+            jmesPath: to_string(@)
+            value: '{{ kubeconfigData | base64_decode(@) | parse_yaml(@).users[0].user."client-certificate-data"}}'
+        - name: clientKey
+          variable:
+            jmesPath: to_string(@)
+            value: '{{ kubeconfigData | base64_decode(@) | parse_yaml(@).users[0].user."client-key-data"}}'
+        - name: dataConfig
+          variable:
+            jmesPath: to_string(@)
+            value: |
+              {
+                "tlsClientConfig": {
+                  "insecure": false,
+                  "caData": "{{ caData }}",
+                  "certData": "{{ clientCert }}",
+                  "keyData": "{{ clientKey }}"
+                }
+              }
+      generate:
+        apiVersion: v1
+        data:
+          data:
+            name: "{{ clusterName | base64_encode(@) }}"
+            server: "{{ serverName | base64_encode(@) }}"
+            config: "{{ dataConfig | base64_encode(@) }}"
+          metadata:
+            labels:
+              argocd.argoproj.io/secret-type: cluster
+          type: Opaque
+        kind: Secret
+        name: "{{ clusterName }}"
+        namespace: argocd
+        synchronize: true
